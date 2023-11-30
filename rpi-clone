@@ -10,36 +10,32 @@
 
 version=2.0.22
 
-# setup trusted paths for dependancies (like rsync, grub, fdisk, etc)
+# setup trusted paths for dependancies (like rsync, fdisk, etc)
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-
-# auto run grub-install if grub detected
-grub_auto=1
 
 PGM=`basename $0`
 setup_command="$PGM-setup"
 
-rsync_options="--force -rltWDEHXAgoptx"
+rsync_options="--force -rltWDEHXAgoptx --info=progress2 "
+#-r recursive
+#-l copy symlinks as symlinks
+#-t preserve modification time
+#-W copy whole files
+#-D preserve device and special files 
+#-E preserve file executability
+#-H preserve hard links
+#-X preserve extended attributes
+#-A preserve ACLs (implies -p)
+#-g preserve group
+#-o preserve owner
+#-p preerve permission
+#-t preserver times
+#-x don't cross filesystem boundaries
 
 if [ `id -u` != 0 ]
 then
     echo -e "$PGM needs to be run as root.\n"
     exit 1
-fi
-
-raspbian=0
-raspbian_buster=0
-if [ -f /etc/os-release ]
-then
-	pretty=`cat /etc/os-release | grep PRETTY`
-	if [[ "$pretty" == *"Raspbian"* ]]
-	then
-		raspbian=1
-	fi
-	if ((raspbian)) && [[ "$pretty" == *"buster"* ]]
-	then
-		raspbian_buster=1
-	fi
 fi
 
 confirm()
@@ -91,7 +87,6 @@ clone_log=/var/log/$PGM.log
 
 HOSTNAME=`hostname`
 
-
 usage()
 	{
 	echo $"
@@ -100,7 +95,6 @@ usage: $PGM sdN {-v|--verbose} {-f|--force-initialize} {-f2}
          {-s|--setup host} {-e|--edit-fstab sdX } {-m|--mountdir dir }
          {-L|--label-partitions label} {-l|--leave-sd-usb-boot}
          {-a|--all-sync} {-F|--Force-sync} {-x} {-V|--version}
-         {--convert-fstab-to-partuuid}
          {--exclude=PATTERN} {--exclude-from=FILE}
 
     -v	    - verbose rsync, list all files as they are copied.
@@ -494,7 +488,7 @@ print_options()
 	if ((p1_size_new > 0))
 	then
 		printf "%-3s%-19s : %s %s %s\n" "-p " "$p1_size_arg" \
-				"resize /boot to" "$p1_size_new" "blocks of 512 Bytes."
+				"resize /boot/config to" "$p1_size_new" "blocks of 512 Bytes."
 	fi
 
 	if [ "$edit_fstab_name" != "" ]
@@ -537,11 +531,6 @@ print_options()
 		printf "%-22s : no.\n" "Run setup script"
 	fi
 
-	if ((have_grub))
-	then
-		printf "%-22s : %s\n" "Run grub" \
-			"grub-install --root-directory=$clone /dev/$dst_disk"
-	fi
 	printf "%-22s : %s.\n" "Verbose mode" "$verbose"
 	printf "%-23s:\n" "-----------------------"
 	}
@@ -586,21 +575,21 @@ get_src_disk()
 
 # ==== source (booted) disk info and default mount list
 #
-src_boot_dev=`findmnt /boot -o source -n | grep "/dev/"`
+src_config_dev=`findmnt /boot/config -o source -n | grep "/dev/"`
 src_root_dev=`findmnt / -o source -n | grep "/dev/"`
 SD_slot_boot=0
 SD_slot_dst=0
 src_part_base=""
 
-boot_part_num=0
+config_part_num=0
 alt_root_part_num=0
 
 
-if [ "$src_boot_dev" == "" ]
+if [ "$src_config_dev" == "" ]
 then
 	get_src_disk "$src_root_dev" "src_disk" "unused"
 else
-	get_src_disk "$src_boot_dev" "src_disk" "boot_part_num"
+	get_src_disk "$src_config_dev" "src_disk" "config_part_num"
 fi
 
 get_src_disk "$src_root_dev" "src_root_disk" "root_part_num"
@@ -624,7 +613,7 @@ then
 		# But will assume SD card has a root partition just above its root.
 		#
 		alt_root_part_num="$root_part_num"
-		root_part_num=$((boot_part_num + 1))
+		root_part_num=$((config_part_num + 1))
 	else
 		echo $"
 Boot and root are on different disks and it's not a SD card boot.
@@ -767,7 +756,6 @@ Unattended=0
 quiet=0
 custom_sync=0
 leave_sd_usb_boot=0
-convert_to_partuuid=0
 p1_size_new=0
 
 while [ "$1" ]
@@ -837,7 +825,7 @@ do
 				then
 					if ((!force_sync && p1_size_new < 200 * 1024))
 					then
-						echo "Setting /boot partition size less than 100 MB seems wrong so will not try."
+						echo "Setting /boot/config partition size less than 100 MB seems wrong so will not try."
 						echo "    Use -F before -p to override."
 						exit 1
 					fi
@@ -892,9 +880,6 @@ do
 		-F|--Force-sync)
 			force_sync=1
 			;;
-		--convert-fstab-to-partuuid)
-			convert_to_partuuid=1
-			;;
 		-V|--version)
 			echo $PGM Version: $version
 			exit 0
@@ -940,57 +925,6 @@ if ((usage_error))
 then
 	echo ""
     exit 1
-fi
-
-if ((convert_to_partuuid))
-then
-	unattended=0
-	Unattended=0
-
-	fstab=/etc/fstab
-	fstab_tmp=/tmp/fstab
-	fstab_save=${fstab}.${PGM}-save
-	confirm "This will change your $fstab, are you sure?" "abort"
-
-	cp $fstab $fstab_tmp
-	printf "\nConverting $fstab from device names to PARTUUID\n"
-	count=0
-	for ((p = 1; p <= n_src_parts; p++))
-	do
-		if grep -q "^/dev/${src_partition[p]}" $fstab_tmp
-		then
-			partuuid=$(lsblk -n -o PARTUUID /dev/${src_partition[p]})
-			sed -i "s/\/dev\/${src_partition[p]}/PARTUUID=$partuuid/" $fstab_tmp
-			printf "  Editing $fstab, changing /dev/${src_partition[p]} to $partuuid\n"
-			((++count))
-		fi
-	done
-	if ((count))
-	then
-		cp $fstab $fstab_save
-		cp $fstab_tmp $fstab
-		printf "Your original fstab is backed up to $fstab_save\n"
-
-		cmdline_txt=/boot/cmdline.txt
-		cmdline_save=$cmdline_txt.${PGM}-save
-		if [ -f $cmdline_txt ] && grep -q "$src_root_dev" $cmdline_txt
-		then
-			root_part=${src_partition[root_part_num]}
-			partuuid=$(lsblk -n -o PARTUUID $src_root_dev)
-			if [ "$partuuid" != "" ]
-			then
-				cp $cmdline_txt $cmdline_save
-				sed -i "s/\/dev\/$root_part/PARTUUID=$partuuid/" $cmdline_txt
-				printf "  Editing $cmdline_txt, changing root=$src_root_dev to root=PARTUUID=$partuuid\n"
-				printf "Your original cmdline.txt is backed up to $cmdline_save\n"
-			fi
-		fi
-	else
-		printf "Could not find any $src_disk partition names in $fstab, nothing changed.\n"
-	fi
-	rm $fstab_tmp
-	echo ""
-	exit 0
 fi
 
 # dst_mount_flag enumerations:
@@ -1270,13 +1204,6 @@ then
 	exclude_swapfile="--exclude $swapfile"
 fi
 
-if ((grub_auto)) && [ -d /boot/grub ] && command -v grub-install
-then
-	have_grub=1
-else
-	have_grub=0
-fi
-
 print_partitions
 
 if ((initialize))
@@ -1320,11 +1247,8 @@ Use -U for unattended even if initializing.
 		then
 			printf "%-22s : %s\n" " " \
 						"Possible options:"
-			if ((raspbian))
-			then
-				printf "%-22s : %s\n" " " \
-						"    Use -f2 to force a two partition initialize clone."
-			fi
+			printf "%-22s : %s\n" " " \
+					"    Use -f2 to force a two partition initialize clone."
 			printf "%-22s : %s\n" " " \
 						"    Use -m to limit partitions to clone."
 			printf "%-22s : %s\n" " " \
@@ -1345,14 +1269,14 @@ Use -U for unattended even if initializing.
 	printf "%-22s : %s\n" "** WARNING **" \
 			"All destination disk $dst_disk data will be overwritten!"
 
-	if ((raspbian_buster && p1_size_new == 0 && src_size_sectors[1] < 400000))
+	if ((p1_size_new == 0 && src_size_sectors[1] < 400000))
 	then
 		printf "%-22s : %s\n" "** WARNING **" \
-			"Your source /boot partition is smaller than the"
+			"Your source /boot/config partition is smaller than the"
 		printf "%-22s : %s\n" "" \
-			"  Raspbian Buster 256M standard.  Consider using"
+			"  RDK OS 256M standard.  Consider using"
 		printf "%-22s : %s\n" "" \
-			"  the '-p 256M' option to avoid /boot clone errors."
+			"  the '-p 256M' option to avoid /boot/config clone errors."
 	fi
 
 	abort=0
@@ -1503,7 +1427,7 @@ Use -U for unattended even if initializing.
 			mkfs_type=$fs_type
 		fi
 
-		if [ "${src_mounted_dir[p]}" == "/boot" ] && ((p == 1))
+		if [ "${src_mounted_dir[p]}" == "//boot/config" ] && ((p == 1))
 		then
 			ext_label $p "$fs_type" "-L" label
 			printf "  => mkfs -t $mkfs_type $label $dst_dev ..."
@@ -1606,12 +1530,12 @@ else
 		exit 1
 	fi
 
-	if ((raspbian_buster && dst_size_sectors[1] < 500000))
+	if ((dst_size_sectors[1] < 500000))
 	then
 		qprintf "%-22s : %s\n" "** WARNING **" \
-			"Your destination /boot partition is smaller than the"
+			"Your destination /boot/config partition is smaller than the"
 		qprintf "%-22s : %s\n" "" \
-			"  Raspbian Buster 256M standard. Consider initializing"
+			"  RDK OS 256M standard. Consider initializing"
 		if ((n_dst_parts <= 2))
 		then
 			qprintf "%-22s : %s\n" "" \
@@ -1727,65 +1651,11 @@ do
 done
 qecho ""
 
-# Fix PARTUUID or device name references in cmdline.txt and fstab
-#
-fstab=${clone}/etc/fstab
-cmdline_txt=${clone}/boot/cmdline.txt
-
-if [ -f $cmdline_txt ]
-then
-	if ((leave_sd_usb_boot && SD_slot_dst))
-	then
-		qecho "Leaving SD to USB boot alone."
-		cp $cmdline_txt ${clone}/boot/cmdline.boot
-		cmdline_txt=${clone}/boot/cmdline.boot
-	fi
-	if grep -q $src_disk_ID $cmdline_txt
-	then
-		qecho "Editing $cmdline_txt PARTUUID to use $dst_disk_ID"
-		sed -i "s/${src_disk_ID}/${dst_disk_ID}/" "$cmdline_txt"
-	elif [ "$edit_fstab_name" != "" ] && grep -q ${src_part_base} $cmdline_txt
-	then
-		qecho "Editing $cmdline_txt references from $src_part_base to $edit_fstab_name"
-		sed -i "s/${src_part_base}/$edit_fstab_name/" "$cmdline_txt"
-	fi
-	if ((leave_sd_usb_boot && SD_slot_boot))
-	then
-		qecho "Copying USB cmdline.txt to SD card to set up USB boot."
-		cp /boot/cmdline.txt /boot/cmdline.boot
-		cp $cmdline_txt /boot/cmdline.txt
-	fi
-fi
-
-if grep -q $src_disk_ID $fstab
-then
-	qecho "Editing $fstab PARTUUID to use $dst_disk_ID"
-	sed -i "s/${src_disk_ID}/${dst_disk_ID}/g" "$fstab"
-elif [ "$edit_fstab_name" != "" ] && grep -q ${src_part_base} $fstab
-then
-	qecho "Editing $fstab references from $src_part_base to $edit_fstab_name"
-	sed -i "s/${src_part_base}/${edit_fstab_name}/" "$fstab"
-fi
-
-
-rm -f $clone/etc/udev/rules.d/70-persistent-net.rules
-
 dst_root_vol_name=`e2label $dst_root_dev`
 
 if [ "$dst_root_vol_name" = "" ]
 then
 	dst_root_vol_name="no label"
-fi
-
-if ((have_grub))
-then
-	qecho "grub-install --root-directory=$clone /dev/$dst_disk"
-	if ((quiet))
-	then
-		grub-install --root-directory=$clone /dev/$dst_disk &> /dev/null
-	else
-		grub-install --root-directory=$clone /dev/$dst_disk
-	fi
 fi
 
 if [ "$setup_args" != "" ]
