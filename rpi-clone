@@ -1427,7 +1427,7 @@ Use -U for unattended even if initializing.
 			mkfs_type=$fs_type
 		fi
 
-		if [ "${src_mounted_dir[p]}" == "//boot/config" ] && ((p == 1))
+		if [ "${src_mounted_dir[p]}" == "/boot/config" ] && ((p == 1))
 		then
 			ext_label $p "$fs_type" "-L" label
 			printf "  => mkfs -t $mkfs_type $label $dst_dev ..."
